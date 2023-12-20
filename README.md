@@ -1,2 +1,4 @@
-# RiFeNet
-code for the paper "Relevant Intrinsic Feature Enhancement Network for Few-Shot Semantic Segmentation" in AAAI24
+# Relevant Intrinsic Feature Enhancement Network for Few-Shot Semantic Segmentation
+Codes for RiFeNet in AAAI24
+https://arxiv.org/abs/2312.06474
+codes are coming soon
