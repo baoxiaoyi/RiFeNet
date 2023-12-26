@@ -5,6 +5,7 @@ DATA:
   classes: 2
 
 TRAIN:
+  num_unlabel: 2
   layers: 50
   sync_bn: False
   train_h: 473
@@ -18,11 +19,12 @@ TRAIN:
   ignore_label: 255
   padding_label: 255
   aux_weight: 1.0
+  un_weight: 0.5
   train_gpu: [0,1,2,3]  # If only one gpu is used, batch size can be set to 8 and base_lr should be 0.005.
-  workers: 16  # data loader workers
-  batch_size: 32  # batch size for training. 
+  workers: 1  # data loader workers
+  batch_size: 1  # batch size for training.
   batch_size_val: 1 # this version of code only support val batch = 1
-  base_lr: 0.02
+  base_lr: 0.0025
   epochs: 50
   start_epoch: 0
   power: 0.9 # 0 means no decay
@@ -31,8 +33,8 @@ TRAIN:
   manual_seed: 321
   print_freq: 5
   save_freq: 20
-  save_path: exp/coco/split0_resnet50/model
-  weight:  
+  save_path: visual/coco/split0_resnet50/model
+  weight:
   resume:  # path to latest checkpoint (default: none)
   evaluate: True
   split: 0

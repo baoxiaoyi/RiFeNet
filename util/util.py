@@ -89,6 +89,14 @@ def check_mkdir(dir_name):
     if not os.path.exists(dir_name):
         os.mkdir(dir_name)
 
+def get_model_para_number(model):
+    total_number = 0
+    learnable_number = 0
+    for para in model.parameters():
+        total_number += torch.numel(para)
+        if para.requires_grad == True:
+            learnable_number+= torch.numel(para)
+    return total_number, learnable_number
 
 def check_makedirs(dir_name):
     if not os.path.exists(dir_name):

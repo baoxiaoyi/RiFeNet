@@ -11,7 +11,7 @@ import time
 import json
 
 from tqdm import tqdm
-
+from torchvision.transforms import ColorJitter
 IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm']
 
 
@@ -21,12 +21,13 @@ def is_image_file(filename):
     return any(filename_lower.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def make_dataset(split=0, data_root=None, data_list=None, sub_list=None):    
+def make_dataset(split=0, data_root=None, data_list=None, sub_list=None, filter_intersection = False):
     assert split in [0, 1, 2, 3, 10, 11, 999]
     if not os.path.isfile(data_list):
         raise (RuntimeError("Image list file do not exist: " + data_list + "\n"))
 
     split_data_list = data_list.split('.')[0] + '_split{}'.format(split) + '.pth'
+    #split_data
     if os.path.isfile(split_data_list):
         image_label_list, sub_class_file_list = torch.load(split_data_list)
         return image_label_list, sub_class_file_list
@@ -42,7 +43,6 @@ def make_dataset(split=0, data_root=None, data_list=None, sub_list=None):
     sub_class_file_list = {}
     for sub_c in sub_list:
         sub_class_file_list[sub_c] = []
-
     for l_idx in tqdm(range(len(list_read))):
         line = list_read[l_idx]
         # line = line.strip()
@@ -59,14 +59,24 @@ def make_dataset(split=0, data_root=None, data_list=None, sub_list=None):
         if 255 in label_class:
             label_class.remove(255)
 
-        new_label_class = []       
-        for c in label_class:
-            if c in sub_list:
-                tmp_label = np.zeros_like(label)
-                target_pix = np.where(label == c)
-                tmp_label[target_pix[0],target_pix[1]] = 1 
-                if tmp_label.sum() >= 2 * 32 * 32:      
-                    new_label_class.append(c)
+        new_label_class = []
+        if filter_intersection:  # filter images containing objects of novel categories during meta-training
+            if set(label_class).issubset(set(sub_list)):
+                for c in label_class:
+                    if c in sub_list:
+                        tmp_label = np.zeros_like(label)
+                        target_pix = np.where(label == c)
+                        tmp_label[target_pix[0],target_pix[1]] = 1
+                        if tmp_label.sum() >= 2 * 32 * 32:
+                            new_label_class.append(c)
+        else:
+            for c in label_class:
+                if c in sub_list:
+                    tmp_label = np.zeros_like(label)
+                    target_pix = np.where(label == c)
+                    tmp_label[target_pix[0],target_pix[1]] = 1
+                    if tmp_label.sum() >= 2 * 32 * 32:
+                        new_label_class.append(c)
 
         label_class = new_label_class    
 
@@ -85,7 +95,7 @@ def make_dataset(split=0, data_root=None, data_list=None, sub_list=None):
 
 
 class SemData(Dataset):
-    def __init__(self, split=3, shot=1, data_root=None, data_list=None, transform=None, mode='train', use_coco=False, use_split_coco=False):
+    def __init__(self, split=3, shot=1, data_root=None, data_list=None, transform=None, strong_transform=False, mode='train', use_coco=False, use_split_coco=False,num_unlabel=2):
         assert mode in ['train', 'val', 'test']
         
         self.mode = mode
@@ -93,6 +103,7 @@ class SemData(Dataset):
         self.shot = shot
         self.data_root = data_root   
         self.use_coco = use_coco
+        self.num_unlabel = num_unlabel
 
         if not use_coco:
             self.class_list = list(range(1, 21)) #[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
@@ -142,15 +153,17 @@ class SemData(Dataset):
                     self.sub_val_list = list(range(1, 21))    
 
         print('sub_list: ', self.sub_list)
-        print('sub_val_list: ', self.sub_val_list)    
-
+        print('sub_val_list: ', self.sub_val_list)
         if self.mode == 'train':
-            self.data_list, self.sub_class_file_list = make_dataset(split, data_root, data_list, self.sub_list)
+            self.data_list, self.sub_class_file_list = make_dataset(split, data_root, data_list, self.sub_list,True)
             assert len(self.sub_class_file_list.keys()) == len(self.sub_list)
         elif self.mode == 'val':
-            self.data_list, self.sub_class_file_list = make_dataset(split, data_root, data_list, self.sub_val_list)
+            self.data_list, self.sub_class_file_list = make_dataset(split, data_root, data_list, self.sub_val_list,False)
             assert len(self.sub_class_file_list.keys()) == len(self.sub_val_list) 
         self.transform = transform
+        self.strong_transform = None
+        if strong_transform:
+            self.strong_transform = ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25)
 
 
     def __len__(self):
@@ -264,10 +277,86 @@ class SemData(Dataset):
             s_eys = support_padding_list
             s_ey = s_eys[0].unsqueeze(0)
             for i in range(1, self.shot):
-                s_ey = torch.cat([s_eys[i].unsqueeze(0), s_ey], 0)   
+                s_ey = torch.cat([s_eys[i].unsqueeze(0), s_ey], 0)
+
+        n_unlabel = self.num_unlabel
+        unlabel_image_path_list = []
+        unlabel_label_path_list = []
+        unlabel_idx_list = []
+        for k in range(n_unlabel):
+            unlabel_idx = random.randint(1, num_file) - 1
+            unlabel_image_path = image_path
+            unlabel_label_path = label_path
+            while ((unlabel_image_path == image_path and unlabel_label_path == label_path) or unlabel_idx in unlabel_idx_list):
+                unlabel_idx = random.randint(1, num_file) - 1
+                unlabel_image_path, unlabel_label_path = file_class_chosen[unlabel_idx]
+            unlabel_idx_list.append(unlabel_idx)
+            unlabel_image_path_list.append(unlabel_image_path)
+            unlabel_label_path_list.append(unlabel_label_path)
+
+        unlabel_image_list = []
+        unlabel_label_list = []
+        unlabel_padding_list = []
+        unstrong_image_list = []
+        for k in range(n_unlabel):
+            unlabel_image_path = unlabel_image_path_list[k]
+            unlabel_label_path = unlabel_label_path_list[k]
+            unlabel_image = cv2.imread(unlabel_image_path, cv2.IMREAD_COLOR)
+            unlabel_image = cv2.cvtColor(unlabel_image, cv2.COLOR_BGR2RGB)
+            unlabel_image = np.float32(unlabel_image)
+            unlabel_label = cv2.imread(unlabel_label_path, cv2.IMREAD_GRAYSCALE)
+            target_pix = np.where(unlabel_label == class_chosen)
+            ignore_pix = np.where(unlabel_label == 255)
+            unlabel_label[:, :] = 0
+            unlabel_label[target_pix[0], target_pix[1]] = 1
+            unlabel_label[ignore_pix[0], ignore_pix[1]] = 255
+            if unlabel_image.shape[0] != unlabel_label.shape[0] or unlabel_image.shape[1] != unlabel_label.shape[1]:
+                raise (RuntimeError(
+                    "unlabel Image & label shape mismatch: " + unlabel_image_path + " " + unlabel_label_path + "\n"))
+
+            if not self.use_coco:
+                unlabel_padding_label = np.zeros_like(unlabel_label)
+                unlabel_padding_label[unlabel_label == 255] = 255
+            else:
+                unlabel_padding_label = np.zeros_like(unlabel_label)
+            unlabel_image_list.append(unlabel_image)
+            unlabel_label_list.append(unlabel_label)
+            unlabel_padding_list.append(unlabel_padding_label)
+            unstrong_image_list.append(unlabel_image)
+        assert len(unlabel_label_list) == n_unlabel and len(unlabel_image_list) == n_unlabel
+
+        if self.transform is not None:
+            for k in range(n_unlabel):
+                unlabel_image_list[k], unlabel_label_list[k], unlabel_padding_list[k] = self.transform(
+                    unlabel_image_list[k], unlabel_label_list[k], unlabel_padding_list[k])
+                if self.strong_transform is not None:
+                    while True:
+                        unstrong_image_list[k] = self.strong_transform(unlabel_image_list[k])
+                        if torch.isnan(unstrong_image_list[k]).int().sum() == 0:
+                            break
+                #assert (torch.isnan(unstrong_image_list[k]).int().sum() == 0), 'dataout nan' + unlabel_image_path_list[k]
+
+        u_xs = unlabel_image_list
+        u_x = u_xs[0].unsqueeze(0)
+        for i in range(1, n_unlabel):
+            u_x = torch.cat([u_xs[i].unsqueeze(0), u_x], 0)
+        #print(len(u_x)) 10
+        #print(u_x[0].size())  [3,473,473]
+        if self.strong_transform is not None:
+            u_strongs = unstrong_image_list
+            u_strong = u_strongs[0].unsqueeze(0)
+            for i in range(1, n_unlabel):
+                u_strong = torch.cat([u_strongs[i].unsqueeze(0), u_strong], 0)
+
+        if unlabel_padding_list is not None:
+            u_eys = unlabel_padding_list
+            u_ey = u_eys[0].unsqueeze(0)
+            for i in range(1, self.num_unlabel):
+                u_ey = torch.cat([u_eys[i].unsqueeze(0), u_ey], 0)
 
         if self.mode == 'train':
-            return image, label, s_x, s_y, padding_mask, s_ey, subcls_list
+            return image, label, s_x, s_y, padding_mask, s_ey, u_ey, u_x, u_strong, subcls_list
+            #return image, label, s_x, s_y, padding_mask, s_ey, u_x, subcls_list
         else:
-            return image, label, s_x, s_y, padding_mask, s_ey, subcls_list, raw_label
+            return image, label, s_x, s_y, padding_mask, s_ey, u_ey, u_x, subcls_list, raw_label
 

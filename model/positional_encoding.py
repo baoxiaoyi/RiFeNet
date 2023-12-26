@@ -62,7 +62,7 @@ class SinePositionalEncoding(nn.Module):
             x_embed = x_embed / (x_embed[:, :, -1:] + self.eps) * self.scale
         dim_t = torch.arange(
             self.num_feats, dtype=torch.float32, device=mask.device)
-        dim_t = self.temperature**(2 * (dim_t // 2) / self.num_feats)
+        dim_t = self.temperature**(2 * torch.div(dim_t, 2, rounding_mode='floor') / self.num_feats)
         pos_x = x_embed[:, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, None] / dim_t
         pos_x = torch.stack(

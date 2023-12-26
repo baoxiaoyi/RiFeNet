@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import logging
 import argparse
+from util.vis_utils import BatchColorize
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -15,10 +16,10 @@ import torch.optim
 import torch.utils.data
 import torch.multiprocessing as mp
 import torch.distributed as dist
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 
-from model.CyCTR import CyCTR
-from util import dataset
+from model.CyCTRablagplp import CyCTR
+from util import dataset#ini as dataset
 from util import transform, config
 from util.util import AverageMeter, poly_learning_rate, intersectionAndUnionGPU
 
@@ -98,7 +99,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     global logger, writer
     logger = get_logger()
-    writer = SummaryWriter(args.save_path)
+    #writer = SummaryWriter(args.save_path)
     logger.info("=> creating model ...")
     logger.info("Classes: {}".format(args.classes))
     logger.info(model)
@@ -151,12 +152,14 @@ def validate(val_loader, model, criterion):
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
     target_meter = AverageMeter()
+    overfitting_meter = AverageMeter()
     if args.use_coco:
         split_gap = 20
     else:
         split_gap = 5
     class_intersection_meter = [0]*split_gap
-    class_union_meter = [0]*split_gap  
+    class_union_meter = [0]*split_gap
+    #colorizer = BatchColorize(n=1)
 
     if args.manual_seed is not None and args.fix_random_seed_val:
         torch.cuda.manual_seed(args.manual_seed)
@@ -177,8 +180,9 @@ def validate(val_loader, model, criterion):
     assert test_num % args.batch_size_val == 0    
     iter_num = 0
     total_time = 0
-    for e in range(20):
-        for i, (input, target, s_input, s_mask, padding_mask, s_padding_mask, subcls, ori_label) in enumerate(val_loader):
+    for e in range(1):
+        #for i, (input, target, s_input, s_mask, padding_mask, s_padding_mask, subcls, ori_label) in #enumerate(val_loader):
+        for i, (input, target, s_input, s_mask, padding_mask, s_padding_mask, u_padding, unlabeled_x,subcls, ori_label) in enumerate(val_loader):
             if (iter_num-1) * args.batch_size_val >= test_num:
                 break
             iter_num += 1    
@@ -187,9 +191,12 @@ def validate(val_loader, model, criterion):
             target = target.cuda(non_blocking=True)
             padding_mask = padding_mask.cuda(non_blocking=True)
             s_padding_mask = s_padding_mask.cuda(non_blocking=True)
+            #unlabeled_x = unlabeled_x.cuda(non_blocking=True)
+            #u_padding = u_padding.cuda(non_blocking=True)
             ori_label = ori_label.cuda(non_blocking=True)
             start_time = time.time()
-            output = model(s_x=s_input, s_y=s_mask, x=input, y=target, padding_mask=padding_mask, s_padding_mask=s_padding_mask)
+            #output,overfitting = model(s_x=s_input, s_y=s_mask, x=input, y=target, padding_mask=padding_mask, s_padding_mask=s_padding_mask,u_padding = u_padding, un = unlabeled_x)
+            output,overfitting = model(s_x=s_input, s_y=s_mask, x=input, y=target, padding_mask=padding_mask,s_padding_mask=s_padding_mask)
             total_time = total_time + 1
             model_time.update(time.time() - start_time)
 
@@ -204,19 +211,40 @@ def validate(val_loader, model, criterion):
 
             n = input.size(0)
             loss = torch.mean(loss)
+            _h, _w= input.size(-2),input.size(-1)
+            outputt = output.max(1)[1]
+            import matplotlib.cm as cm
+            #import matplotlib.pyplot as plt
+            #print(torch.unique(outputt,return_counts=True))
+            #plt.figure()
+            #plt.axis('off')
+            #plt.subplot(2, 2, 1)
+            #plt.imshow(np.array(output.argmax(dim=1)[0].cpu()),cmap='gray')
+            #plt.savefig('visual/output/'+str(i)+'_pre.png', bbox_inches='tight')
+            #plt.subplot(2, 2, 2)
+            #mm = np.array(target[0].cpu())
+            #mm = np.where(mm >=1,255,0)
+            #print(mm.shape)
+            #print(torch.unique(mm, return_counts=True))
+            #plt.imshow(mm,cmap='gray')
+            #plt.savefig('visual/output/'+str(i) + '_tar.png', bbox_inches='tight')
+            #plt.subplot(2, 2, 3)
+            #plt.imshow(np.array(np.squeeze(input[0].cpu())).transpose(1, 2, 0))
+            #plt.savefig('visual/output/'+str(i) + 'input_.png', bbox_inches='tight')
+            #plt.show()
+            #os.system("pause")
 
-            output = output.max(1)[1]
-
-            intersection, union, new_target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
+            intersection, union, new_target = intersectionAndUnionGPU(outputt, target, args.classes, args.ignore_label)
             intersection, union, target, new_target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy(), new_target.cpu().numpy()
             intersection_meter.update(intersection), union_meter.update(union), target_meter.update(new_target)
-                
+
             subcls = subcls[0].cpu().numpy()[0]
             class_intersection_meter[(subcls-1)%split_gap] += intersection[1]
             class_union_meter[(subcls-1)%split_gap] += union[1] 
 
             accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
             loss_meter.update(loss.item(), input.size(0))
+            overfitting_meter.update(overfitting.item(), input.size(0))
             batch_time.update(time.time() - end)
             end = time.time()
             if ((i + 1) % (test_num/100) == 0) and main_process():
@@ -248,7 +276,7 @@ def validate(val_loader, model, criterion):
     for i in range(split_gap):
         logger.info('Class_{} Result: iou {:.4f}.'.format(i+1, class_iou_class[i]))            
     
-
+    logger.info('overfitting:{:.4f}.'.format(overfitting_meter.avg))
     if main_process():
         logger.info('FBIoU---Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
         for i in range(args.classes):

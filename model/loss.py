@@ -69,3 +69,93 @@ class WeightedDiceLoss(nn.Module):
             self.reduction,
         )
 
+
+def weighted_dice_loss2(
+        prediction,
+        target_seg,
+        weighted_val: float = 1.0,
+        reduction: str = "sum",
+        eps: float = 1e-8,
+):
+    """
+    Weighted version of Dice Loss
+
+    Args:
+        prediction: prediction
+        target_seg: segmentation target
+        weighted_val: values of k positives,
+        reduction: 'none' | 'mean' | 'sum'
+                   'none': No reduction will be applied to the output.
+                   'mean': The output will be averaged.
+                   'sum' : The output will be summed.
+        eps: the minimum eps,
+    """
+
+    n, _, h, w = target_seg.shape
+
+    prediction = prediction.reshape(-1, h, w)
+    target_seg = target_seg.reshape(-1, h, w)
+    prediction = torch.sigmoid(prediction)
+    prediction = prediction.reshape(-1, h * w)
+    target_seg = target_seg.reshape(-1, h * w)
+
+    # calculate dice loss
+    loss_part = (prediction ** 2).sum(dim=-1) + (target_seg ** 2).sum(dim=-1)
+    loss = 1 - 2 * (target_seg * prediction).sum(dim=-1) / torch.clamp(loss_part, min=eps)
+    # normalize the loss
+    loss = loss * weighted_val
+
+    if reduction == "sum":
+        loss = loss.sum() / n
+    elif reduction == "mean":
+        loss = loss.mean()
+    return loss
+
+
+class WeightedDiceLoss2(nn.Module):
+    def __init__(
+            self,
+            weighted_val: float = 1.0,
+            reduction: str = "sum",
+    ):
+        super(WeightedDiceLoss2, self).__init__()
+        self.weighted_val = weighted_val
+        self.reduction = reduction
+
+    def forward(self,
+                prediction,
+                target_seg, ):
+        return weighted_dice_loss2(
+            prediction,
+            target_seg,
+            self.weighted_val,
+            self.reduction,
+        )
+
+
+
+def Self_cross_entropy(input, target, ignore_index=None):
+    '''自己用pytorch实现cross_entropy，
+       有时候会因为各种原因，如：样本问题等，出现个别样本的loss为nan，影响模型的训练，
+       不适用于所有样本loss都为nan的情况
+       input:n*categ[2,2,60,60]
+       target:n[2,60,60]
+    '''
+    eps = 1e-8
+    input = input.contiguous().view(input.shape[-4],input.shape[-3],-1)
+    log_prb = F.log_softmax(input+eps, dim=1)
+
+    #one_hot = torch.zeros_like(input).scatter(1, target.view(-1, 1), 1)  # 将target转换成one-hot编码
+    one_hot = torch.nn.functional.one_hot(target,num_classes=input.shape[-2]).view(input.shape[-3],input.shape[-2],-1)
+    #print(one_hot.size())
+    #print(log_prb.size())
+    loss = -(one_hot * log_prb).sum(dim=1)  # n,得到每个样本的loss
+
+    if ignore_index:  # 忽略[PAD]的label
+        non_pad_mask = target.ne(0)
+        loss = loss.masked_select(non_pad_mask)
+
+    not_nan_mask = ~torch.isnan(loss)  # 找到loss为非nan的样本
+    loss = loss.masked_select(not_nan_mask).mean()
+    return loss
+

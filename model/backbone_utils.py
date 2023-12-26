@@ -43,18 +43,37 @@ class FrozenBatchNorm2d(torch.nn.Module):
 
 
 class BackboneBase(nn.Module):
-
-    def __init__(self, backbone: nn.Module, train_backbone: bool, num_channels: int, return_interm_layers: bool):
+    def __init__(self, backbone: nn.Module, train_backbone: bool, usesvf:bool, num_channels: int, return_interm_layers: bool):
         super().__init__()
         for name, parameter in backbone.named_parameters():
             if not train_backbone or 'layer2' not in name and 'layer3' not in name and 'layer4' not in name:
                 parameter.requires_grad_(False)
+        #if usesvf:
+            #self.svf_modules(backbone)
         if return_interm_layers:
             return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
         else:
             return_layers = {'layer4': "0"}
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
         self.num_channels = num_channels
+
+    def svf_modules(self, model):
+        #for param in model.layer0.parameters():
+            #param.requires_grad = False
+        for param in model.layer1.parameters():
+            param.requires_grad = False
+        for name, param in model.layer2.named_parameters():
+            param.requires_grad = False
+            if 'vector_S' in name:
+                param.requires_grad = True
+        for name, param in model.layer3.named_parameters():
+            param.requires_grad = False
+            if 'vector_S' in name:
+                param.requires_grad = True
+        for name, param in model.layer4.named_parameters():
+            param.requires_grad = False
+            if 'vector_S' in name:
+                param.requires_grad = True
 
     def forward(self, x):
         x = self.body(x)
@@ -69,10 +88,11 @@ class Backbone(BackboneBase):
     """ResNet backbone with frozen BatchNorm."""
     def __init__(self, name: str,
                  train_backbone: bool,
+                 usesvf:bool,
                  return_interm_layers: bool,
                  dilation: list):
         backbone = resnets_dict[name][0](
             replace_stride_with_dilation=dilation,
             pretrained=resnets_dict[name][1], norm_layer=FrozenBatchNorm2d)
         num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
-        super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
+        super().__init__(backbone, train_backbone, usesvf, num_channels, return_interm_layers)

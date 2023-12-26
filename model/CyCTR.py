@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from model.resnet import *
 from model.loss import WeightedDiceLoss
-from model.cyc_transformer import CyCTransformer
+from model.cyc_transformer0 import CyCTransformer
 from model.ops.modules import MSDeformAttn
 from model.backbone_utils import Backbone
 
@@ -17,7 +17,7 @@ def Weighted_GAP(supp_feat, mask):
 
 class CyCTR(nn.Module):
     def __init__(self, layers=50, classes=2, shot=1, reduce_dim=384, \
-        criterion=WeightedDiceLoss(), with_transformer=True, trans_multi_lvl=1):
+        criterion=WeightedDiceLoss(), with_transformer=True, trans_multi_lvl=1,num_unlabel = 2):
         super(CyCTR, self).__init__()
         assert layers in [50, 101]
         assert classes > 1 
@@ -28,6 +28,7 @@ class CyCTR(nn.Module):
         if self.with_transformer:
             self.trans_multi_lvl = trans_multi_lvl
         self.reduce_dim = reduce_dim
+        self.num_unlabel = num_unlabel
 
         self.print_params()
 
@@ -114,7 +115,7 @@ class CyCTR(nn.Module):
             )
 
         self.init_weights()
-        self.backbone = Backbone('resnet{}'.format(layers), train_backbone=False, return_interm_layers=True, dilation=[False, True, True])
+        self.backbone = Backbone('resnet{}'.format(layers), train_backbone=False,usesvf=False, return_interm_layers=True, dilation=[False, True, True])
 
 
     def init_weights(self):
@@ -138,11 +139,10 @@ class CyCTR(nn.Module):
         return repr_str
 
 
-    def forward(self, x, s_x=torch.FloatTensor(1,1,3,473,473).cuda(), s_y=torch.FloatTensor(1,1,473,473).cuda(), y=None, padding_mask=None, s_padding_mask=None):
+    def forward(self, x, s_x=torch.FloatTensor(1,1,3,473,473).cuda(), s_y=torch.FloatTensor(1,1,473,473).cuda(), y=None, padding_mask=None, s_padding_mask=None,un = None):
         batch_size, _, h, w = x.size()
         assert (h-1) % 8 == 0 and (w-1) % 8 == 0
         img_size = x.size()[-2:]
-
         # backbone feature extraction
         qry_bcb_fts = self.backbone(x)
         supp_bcb_fts = self.backbone(s_x.view(-1, 3, *img_size)) 

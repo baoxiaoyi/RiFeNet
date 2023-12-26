@@ -15,12 +15,12 @@ import torch.optim
 import torch.utils.data
 import torch.multiprocessing as mp
 import torch.distributed as dist
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 
-from model.CyCTR import CyCTR   
-from util import dataset
+from model.CyCTR0108 import CyCTR
+from util import dataset as dataset
 from util import transform, config
-from util.util import AverageMeter, poly_learning_rate, step_learning_rate, intersectionAndUnionGPU
+from util.util import AverageMeter, poly_learning_rate, step_learning_rate, intersectionAndUnionGPU, get_model_para_number
 
 cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
@@ -92,8 +92,10 @@ def main_worker(gpu, ngpus_per_node, argss):
     args = argss
 
     model = CyCTR(layers=args.layers, shot=args.shot, \
-        reduce_dim=args.hidden_dims, with_transformer=args.with_transformer)
-
+        reduce_dim=args.hidden_dims, with_transformer=args.with_transformer,num_unlabel=args.num_unlabel)
+    total_number, learnable_number = get_model_para_number(model)
+    print('Number of Parameters: %d' % (total_number))
+    print('Number of Learnable Parameters: %d' % (learnable_number))
     param_dicts = [
         {"params": [p for n, p in model.named_parameters() if "transformer" not in n
         and p.requires_grad]},
@@ -119,7 +121,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     global logger, writer
     logger = get_logger()
-    writer = SummaryWriter(args.save_path)
+    #writer = SummaryWriter(args.save_path)
     logger.info("=> creating model ...")
     logger.info("Classes: {}".format(args.classes))
     logger.info(model)
@@ -165,7 +167,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         transform.Normalize(mean=mean, std=std)]
     train_transform = transform.Compose(train_transform)
     train_data = dataset.SemData(split=args.split, shot=args.shot, data_root=args.data_root, \
-                                data_list=args.train_list, transform=train_transform, mode='train', \
+                                data_list=args.train_list, transform=train_transform,
+                                 mode='train', \
                                 use_coco=args.use_coco, use_split_coco=args.use_split_coco)
 
     train_sampler = None
@@ -200,20 +203,20 @@ def main_worker(gpu, ngpus_per_node, argss):
 
         epoch_log = epoch + 1
         loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, transformer_optimizer, epoch, base_lrs)
-        if main_process():
+        '''if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
             writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
-            writer.add_scalar('allAcc_train', allAcc_train, epoch_log)     
+            writer.add_scalar('allAcc_train', allAcc_train, epoch_log) '''    
 
-        if args.evaluate and epoch>args.epochs//5:
+        if args.evaluate and epoch>args.epochs//10:
             loss_val, mIoU_val, mAcc_val, allAcc_val, class_miou = validate(val_loader, model)
-            if main_process():
+            '''if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
                 writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
                 writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
                 writer.add_scalar('class_miou_val', class_miou, epoch_log)
-                writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
+                writer.add_scalar('allAcc_val', allAcc_val, epoch_log)'''
             if class_miou > max_iou:
                 max_iou = class_miou
                 if os.path.exists(filename):
@@ -232,6 +235,7 @@ def train(train_loader, model, optimizer, transformer_optimizer, epoch, base_lrs
     data_time = AverageMeter()
     main_loss_meter = AverageMeter()
     aux_loss_meter = AverageMeter()
+    loss_unsup_meter = AverageMeter()
     loss_meter = AverageMeter()
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
@@ -255,8 +259,9 @@ def train(train_loader, model, optimizer, transformer_optimizer, epoch, base_lrs
         s_padding_mask = s_padding_mask.cuda(non_blocking=True)
         input = input.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
-        
-        output, main_loss, aux_loss = model(s_x=s_input, s_y=s_mask, x=input, y=target, padding_mask=padding_mask, s_padding_mask=s_padding_mask)
+
+        output, main_loss, aux_loss = model(s_x=s_input, s_y=s_mask, x=input, y=target,
+                                                        padding_mask=padding_mask, s_padding_mask=s_padding_mask)
 
         if not args.multiprocessing_distributed:
             main_loss, aux_loss = torch.mean(main_loss), torch.mean(aux_loss)
@@ -270,7 +275,7 @@ def train(train_loader, model, optimizer, transformer_optimizer, epoch, base_lrs
 
         n = input.size(0)
         if args.multiprocessing_distributed:
-            main_loss, aux_loss, loss = main_loss.detach() * n, aux_loss * n, loss * n 
+            main_loss, aux_loss, loss = main_loss.detach() * n, aux_loss * n, loss * n
             count = target.new_tensor([n], dtype=torch.long)
             dist.all_reduce(main_loss), dist.all_reduce(aux_loss), dist.all_reduce(loss), dist.all_reduce(count)
             n = count.item()
@@ -301,7 +306,7 @@ def train(train_loader, model, optimizer, transformer_optimizer, epoch, base_lrs
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
                         'MainLoss {main_loss_meter.val:.4f} '
-                        'AuxLoss {aux_loss_meter.val:.4f} '                        
+                        'AuxLoss {aux_loss_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '
                         'Accuracy {accuracy:.4f}.'.format(epoch+1, args.epochs, i + 1, len(train_loader),
                                                           batch_time=batch_time,
@@ -311,11 +316,11 @@ def train(train_loader, model, optimizer, transformer_optimizer, epoch, base_lrs
                                                           aux_loss_meter=aux_loss_meter,
                                                           loss_meter=loss_meter,
                                                           accuracy=accuracy))
-        if main_process():
+        '''if main_process():
             writer.add_scalar('loss_train_batch', main_loss_meter.val, current_iter)
             writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
             writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
+            writer.add_scalar('allAcc_train_batch', accuracy, current_iter)'''
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
@@ -402,7 +407,7 @@ def validate(val_loader, model, criterion=nn.CrossEntropyLoss(ignore_index=255))
                 
             subcls = subcls[0].cpu().numpy()[0]
             class_intersection_meter[(subcls-1)%split_gap] += intersection[1]
-            class_union_meter[(subcls-1)%split_gap] += union[1] 
+            class_union_meter[(subcls-1)%split_gap] += union[1]
 
             accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
             loss_meter.update(loss.item(), input.size(0))

@@ -1,8 +1,9 @@
 import torch
 from torch import Tensor
 import torch.nn as nn
-from torchvision.models.utils import load_state_dict_from_url
+from torch.hub import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
+#from . import svf
 
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
@@ -154,6 +155,7 @@ class ResNet(nn.Module):
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         deep_stem: bool = True,
+        usesvf = False
     ) -> None:
         super(ResNet, self).__init__()
         if norm_layer is None:
@@ -180,6 +182,12 @@ class ResNet(nn.Module):
                                        dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
                                        dilate=replace_stride_with_dilation[2])
+        '''if usesvf:
+            #self.layer0 = svf.resolver(self.layer0, global_low_rank_ratio=1.0, skip_1x1=False, skip_3x3=False)
+            self.layer1 = svf.resolver(self.layer1, global_low_rank_ratio=1.0, skip_1x1=False, skip_3x3=False)
+            self.layer2 = svf.resolver(self.layer2, global_low_rank_ratio=1.0, skip_1x1=False, skip_3x3=False)
+            self.layer3 = svf.resolver(self.layer3, global_low_rank_ratio=1.0, skip_1x1=False, skip_3x3=False)
+            self.layer4 = svf.resolver(self.layer4, global_low_rank_ratio=1.0, skip_1x1=False, skip_3x3=False)'''
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
